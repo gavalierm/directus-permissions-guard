@@ -1,4 +1,5 @@
 import { ForbiddenError } from '@directus/errors';
+import { notifyAdmins } from './shared/notify-admin.js';
 
 // Access level required per collection for items.create:
 //   'manager'  → current user must have manager OR owner of target band
@@ -51,29 +52,53 @@ async function userHasAccess(userId, bandId, level, database) {
   return !!row;
 }
 
-export default ({ filter }, { database, logger }) => {
-  for (const [collection, rule] of Object.entries(RULES)) {
+async function guardCreate(collection, payload, accountability, ctx) {
+  if (accountability?.admin === true) return payload;
+
+  if (!accountability?.user) {
+    throw new ForbiddenError();
+  }
+
+  const rule = RULES[collection];
+  const bandId = await resolveBandId(payload, rule, ctx.database);
+  if (bandId == null) {
+    throw new ForbiddenError();
+  }
+
+  const allowed = await userHasAccess(accountability.user, bandId, rule.level, ctx.database);
+  if (!allowed) {
+    ctx.logger.debug(
+      `[permissions-guard] blocked ${collection}.create user=${accountability.user} band=${bandId} required=${rule.level}`
+    );
+    throw new ForbiddenError();
+  }
+
+  return payload;
+}
+
+export default ({ filter }, context) => {
+  const { services, database, getSchema, logger, env } = context;
+  const ctx = { services, database, getSchema, logger, env };
+
+  for (const collection of Object.keys(RULES)) {
     filter(`${collection}.items.create`, async (payload, _meta, { accountability }) => {
-      if (accountability?.admin === true) return payload;
+      try {
+        return await guardCreate(collection, payload, accountability, ctx);
+      } catch (err) {
+        // Expected: ForbiddenError is the 403 we raise deliberately. Silent.
+        if (err instanceof ForbiddenError) throw err;
 
-      if (!accountability?.user) {
-        throw new ForbiddenError();
+        // Unexpected: DB error, bug, unhandled edge case. Mail admins, then re-throw
+        // so Directus still surfaces the error to the caller (do not swallow —
+        // the CREATE must fail safe, never let an unverified payload through).
+        await notifyAdmins(ctx, `permissions-guard:${collection}`, err, {
+          collection,
+          user: accountability?.user,
+          admin: accountability?.admin === true,
+          payloadKeys: payload && typeof payload === 'object' ? Object.keys(payload) : null,
+        });
+        throw err;
       }
-
-      const bandId = await resolveBandId(payload, rule, database);
-      if (bandId == null) {
-        throw new ForbiddenError();
-      }
-
-      const allowed = await userHasAccess(accountability.user, bandId, rule.level, database);
-      if (!allowed) {
-        logger.debug(
-          `[permissions-guard] blocked ${collection}.create user=${accountability.user} band=${bandId} required=${rule.level}`
-        );
-        throw new ForbiddenError();
-      }
-
-      return payload;
     });
   }
 };

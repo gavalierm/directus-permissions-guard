@@ -32,6 +32,13 @@ Output: `dist/index.js`.
 
 Drop the folder (or its `dist/`) into the Directus `extensions/` directory on the server, same as the other `directus-*` extensions in this workspace. Restart Directus.
 
+## Error handling
+
+- `ForbiddenError` (expected 403 rejections) — thrown silently, surfaces to the client as HTTP 403. Not logged, not emailed.
+- Anything else (DB failure, bug, unhandled case) — emailed to all admin users via `MailService` and re-thrown so the CREATE fails safe (the guard never silently lets an unverified payload through).
+
+The notifier resolves admin recipients at runtime by joining `directus_users` / `directus_access` / `directus_policies` on `admin_access = true`. Sensitive payload keys (`password`, `token`, `access_token`, `refresh_token`, `secret`, `otp`) are redacted before the email is sent.
+
 ## Why not a Directus Flow
 
 Attempted first — Directus Flow `Run Script` operation runs in an isolated sandbox that cannot import `@directus/errors`, so a `throw` always becomes HTTP 500 with a masked message. Only a proper extension hook (running in host context) can raise `ForbiddenError` and yield a clean 403.
