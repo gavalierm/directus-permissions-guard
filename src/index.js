@@ -1,5 +1,13 @@
-import { ForbiddenError } from '@directus/errors';
 import { notifyAdmins } from './shared/notify-admin.js';
+
+class ForbiddenError extends Error {
+  constructor(message = 'Forbidden') {
+    super(message);
+    this.name = 'ForbiddenError';
+    this.code = 'FORBIDDEN';
+    this.status = 403;
+  }
+}
 
 // Access level required per collection for items.create:
 //   'manager'  → current user must have manager OR owner of target band
