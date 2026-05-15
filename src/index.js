@@ -36,12 +36,22 @@ const RULES = {
   bands_files:               { level: 'owner',   bandField: 'bands_id' },
 };
 
+// Nested writes through a parent (e.g. PATCH /items/albums/7 with nested M2M create)
+// can pass FK fields as reference objects ({ id: 7 }) instead of scalar ids. Knex then
+// serializes the object into the bind param and Postgres rejects it with
+// "invalid input syntax for type integer". Coerce to scalar before any DB query.
+function normalizeId(v) {
+  if (v == null) return null;
+  if (typeof v === 'object') return v.id ?? null;
+  return v;
+}
+
 async function resolveBandId(payload, rule, database) {
   if (rule.bandField) {
-    return payload?.[rule.bandField] ?? null;
+    return normalizeId(payload?.[rule.bandField]);
   }
   const { collection, fk } = rule.parentLookup;
-  const parentId = payload?.[fk];
+  const parentId = normalizeId(payload?.[fk]);
   if (parentId == null) return null;
   const parent = await database(collection).where({ id: parentId }).select('band').first();
   return parent?.band ?? null;
