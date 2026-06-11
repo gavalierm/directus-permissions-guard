@@ -79,18 +79,17 @@ async function guardCreate(collection, payload, accountability, ctx) {
 
   const rule = RULES[collection];
 
-  // Nested create: a junction written together with its not-yet-persisted parent (e.g. a new
-  // song created with an author in one request) carries the parent FK as Directus's "+"
-  // placeholder — non-numeric, because the parent row has no id yet. The parent's own
-  // `<parent>.create` guard already authorized the band, so the junction is implicitly
-  // authorized. Short-circuit before resolveBandId: feeding "+" into the raw integer lookup
-  // (`where({ id: "+" })`) throws at Postgres ("invalid input syntax for type integer") and
-  // surfaces to the caller as a 500. Real (numeric) parent ids fall through to the normal check.
-  if (rule.parentLookup) {
-    const parentRef = normalizeId(payload?.[rule.parentLookup.fk]);
-    if (parentRef != null && !/^\d+$/.test(String(parentRef))) {
-      return payload;
-    }
+  // Nested create: the band/parent reference can be Directus's "+" placeholder (or otherwise
+  // non-numeric) when the referenced row is being created in the SAME request and has no id
+  // yet — e.g. a new song created with an author (parentLookup `songs_id`), or a new band
+  // created with a file (bandField `bands_id`). We cannot resolve access against a row that
+  // does not exist, and feeding "+" into the raw integer lookups below throws at Postgres
+  // ("invalid input syntax for type integer") → surfaces to the caller as a 500. Defer to
+  // Directus core permissions for these nested rows; where the parent collection has its own
+  // create guard it already authorized the band. Real (numeric) references fall through.
+  const nestedRef = normalizeId(rule.bandField ? payload?.[rule.bandField] : payload?.[rule.parentLookup.fk]);
+  if (nestedRef != null && !/^\d+$/.test(String(nestedRef))) {
+    return payload;
   }
 
   const bandId = await resolveBandId(payload, rule, ctx.database);
