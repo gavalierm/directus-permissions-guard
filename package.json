@@ -1,6 +1,6 @@
 {
   "name": "directus-hook-permissions-guard",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Enforces manager/owner band access on CREATE for songs/setlists/albums/bands junctions. Returns 403 Forbidden for unauthorized users; admin bypass.",
   "type": "module",
   "directus:extension": {
@@ -13,6 +13,7 @@
     "@directus/extensions-sdk": "^12.0.0"
   },
   "scripts": {
+    "prebuild": "node scripts/check-hooks-installed.js",
     "build": "npx directus-extension build",
     "dev": "npx directus-extension build --watch"
   }

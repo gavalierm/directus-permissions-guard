@@ -1,0 +1,75 @@
+#!/usr/bin/env node
+// Auto-bump the patch version on every commit.
+//
+// Why: extension builds are deployed manually (dist/ is committed), so `git push` deploys
+// nothing. Without a version that moves, there is no way to tell which build runs on the
+// server — permissions-guard sat on 1.0.0 across 7 commits and 4 fixes.
+//
+// ESM (package.json has "type": "module"), so this file uses import, not require.
+// Activated per clone via: git config core.hooksPath scripts/hooks
+
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+
+// Returns stdout, or null when git exits non-zero (e.g. no HEAD on the initial commit).
+function gitOut(args) {
+  try {
+    return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    return null;
+  }
+}
+
+function gitCode(args) {
+  try {
+    execFileSync('git', args, { stdio: 'ignore' });
+    return 0;
+  } catch (err) {
+    return err.status ?? 1;
+  }
+}
+
+function versionOf(text) {
+  if (text === null) return null;
+  try {
+    return JSON.parse(text).version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+if (!fs.existsSync('package.json')) process.exit(0);
+
+const headVersion = versionOf(gitOut(['show', 'HEAD:package.json']));
+const indexVersion = versionOf(gitOut(['show', ':package.json']));
+
+// Initial commit, or package.json not tracked yet — nothing to bump against.
+if (headVersion === null) process.exit(0);
+
+// Version already differs from HEAD: someone bumped it by hand in this commit. Leave it.
+if (indexVersion !== null && indexVersion !== headVersion) {
+  console.log(`[pre-commit] version already bumped to ${indexVersion}, leaving as is`);
+  process.exit(0);
+}
+
+const raw = fs.readFileSync('package.json', 'utf8');
+const match = raw.match(/("version"\s*:\s*")(\d+)\.(\d+)\.(\d+)(")/);
+if (!match) {
+  console.error('[pre-commit] ERROR: no semver "version" field found in package.json');
+  console.error('[pre-commit] Fix package.json before committing.');
+  process.exit(1);
+}
+
+const [needle, prefix, major, minor, patch, suffix] = match;
+const next = `${major}.${minor}.${Number(patch) + 1}`;
+
+// git add below stages the whole file, so unstaged edits ride along. Surface that.
+const hadUnstaged = gitCode(['diff', '--quiet', '--', 'package.json']) !== 0;
+
+fs.writeFileSync('package.json', raw.replace(needle, `${prefix}${next}${suffix}`));
+execFileSync('git', ['add', 'package.json'], { stdio: 'ignore' });
+
+console.log(`[pre-commit] ${headVersion} -> ${next} (auto-bumped)`);
+if (hadUnstaged) {
+  console.log('[pre-commit] WARNING: package.json had unstaged changes; they are now part of this commit');
+}
