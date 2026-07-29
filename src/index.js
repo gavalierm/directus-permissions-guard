@@ -1,13 +1,16 @@
+import { createError } from '@directus/errors';
 import { notifyAdmins } from './shared/notify-admin.js';
 
-class ForbiddenError extends Error {
-  constructor(message = 'Forbidden') {
-    super(message);
-    this.name = 'ForbiddenError';
-    this.code = 'FORBIDDEN';
-    this.status = 403;
-  }
-}
+// Directus maps only DirectusError instances (from @directus/errors) to their HTTP status.
+// A hand-rolled `class extends Error` with `.status` is NOT recognized by the exception
+// handler and surfaces to the caller as a generic 500 "An unexpected error occurred" — the
+// regression introduced by commit 413764c when it dropped the @directus/errors import.
+// createError yields a real DirectusError so unauthorized CREATE returns a clean 403.
+const ForbiddenError = createError(
+  'FORBIDDEN',
+  'Nemáš oprávnenie vytvárať v tejto kapele (vyžaduje sa manager alebo owner).',
+  403,
+);
 
 // Access level required per collection for items.create:
 //   'manager'  → current user must have manager OR owner of target band
@@ -16,6 +19,11 @@ class ForbiddenError extends Error {
 // Band resolution:
 //   bandField       → payload[bandField] IS the target band id (direct FK or bands_id junction)
 //   parentLookup    → payload[fk] points to parent; fetch parent row and read parent.band
+//
+// Optional:
+//   guardWhen(payload) → when present, only enforce the guard if it returns true; otherwise
+//                        pass through to Directus core permissions (e.g. song_notes only
+//                        needs a band check for band-visibility notes, not private ones).
 const RULES = {
   // Parent collections — band FK on payload
   songs:     { level: 'manager', bandField: 'band' },
@@ -34,6 +42,10 @@ const RULES = {
 
   // bands_files: bands_id IS the target band
   bands_files:               { level: 'owner',   bandField: 'bands_id' },
+
+  // song_notes: band-visibility notes require manager/owner of the parent song's band.
+  // Private notes (visibility !== 'band') are self-scoped — pass through (see guardWhen).
+  song_notes:                { level: 'manager', parentLookup: { collection: 'songs',    fk: 'song' }, guardWhen: (p) => p?.visibility === 'band' },
 };
 
 // Nested writes through a parent (e.g. PATCH /items/albums/7 with nested M2M create)
@@ -89,6 +101,12 @@ async function guardCreate(collection, payload, accountability, ctx) {
   // create guard it already authorized the band. Real (numeric) references fall through.
   const nestedRef = normalizeId(rule.bandField ? payload?.[rule.bandField] : payload?.[rule.parentLookup.fk]);
   if (nestedRef != null && !/^\d+$/.test(String(nestedRef))) {
+    return payload;
+  }
+
+  // Conditional rule: only a subset of payloads needs a band check (e.g. a private song_note
+  // is self-scoped and requires no manager/owner). Defer the rest to core permissions.
+  if (rule.guardWhen && !rule.guardWhen(payload)) {
     return payload;
   }
 
