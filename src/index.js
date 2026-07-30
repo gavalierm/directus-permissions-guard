@@ -134,6 +134,16 @@ async function guardCreate(collection, payload, accountability, ctx) {
 
   const bandId = await resolveBandId(payload, rule, ctx.database);
   if (bandId == null) {
+    // A junction (parentLookup) rule resolves the band via a fresh DB read of the parent row.
+    // In a NESTED create — a song duplicated or created together with its authors/genres/albums/
+    // files/translation_authors — Directus 11.17 resolves the '+' placeholder to the real parent
+    // id, but that parent row is not yet committed, so this read finds nothing → band is null.
+    // The parent's OWN songs.items.create guard already authorized the band, and a genuinely
+    // bogus FK is rejected by Directus core's foreign-key constraint — so DEFER here instead of
+    // denying (throwing 403s legitimate owners/managers on every nested create, e.g. duplication).
+    // A bandField rule (band sits directly in the payload) with a null band is a real missing
+    // band → deny.
+    if (rule.parentLookup) return payload;
     throw new ForbiddenError();
   }
 
