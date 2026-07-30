@@ -1,6 +1,6 @@
 {
   "name": "directus-hook-permissions-guard",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Enforces manager/owner band access on CREATE for songs/setlists/albums/bands junctions and band-visibility song_notes. Returns 403 Forbidden for unauthorized users; admin bypass.",
   "type": "module",
   "directus:extension": {
