@@ -1,16 +1,40 @@
-import { createError } from '@directus/errors';
 import { notifyAdmins } from './shared/notify-admin.js';
 
-// Directus maps only DirectusError instances (from @directus/errors) to their HTTP status.
-// A hand-rolled `class extends Error` with `.status` is NOT recognized by the exception
-// handler and surfaces to the caller as a generic 500 "An unexpected error occurred" — the
-// regression introduced by commit 413764c when it dropped the @directus/errors import.
-// createError yields a real DirectusError so unauthorized CREATE returns a clean 403.
-const ForbiddenError = createError(
-  'FORBIDDEN',
-  'Nemáš oprávnenie vytvárať v tejto kapele (vyžaduje sa manager alebo owner).',
-  403,
-);
+// Raising a *clean* 403 needs a Directus-recognized error, which only @directus/errors
+// produces. But a STATIC top-level `import { createError } from '@directus/errors'` is not
+// reliably resolvable from this extension's runtime: commit 413764c dropped it once for that
+// reason, and re-adding it in v1.0.2 broke MODULE LOAD entirely — the default export never
+// ran, no filters registered, and every guarded CREATE silently succeeded (worse than a 500).
+//
+// So resolve it LAZILY (dynamic import, cached, failure caught) with a plain-Error fallback.
+// Guarantees: the module always loads and the guard always enforces. Best case a clean 403;
+// worst case a still-blocking error (never an unguarded pass-through).
+let _forbiddenClass;
+let _forbiddenResolved = false;
+async function forbidden() {
+  if (!_forbiddenResolved) {
+    _forbiddenResolved = true;
+    try {
+      const errors = await import('@directus/errors');
+      const createError = errors.createError ?? errors.default?.createError;
+      if (typeof createError === 'function') {
+        _forbiddenClass = createError(
+          'FORBIDDEN',
+          'Nemáš oprávnenie vytvárať v tejto kapele (vyžaduje sa manager alebo owner).',
+          403,
+        );
+      }
+    } catch {
+      // @directus/errors not importable in this runtime — fall back to a plain error below.
+    }
+  }
+  if (_forbiddenClass) return new _forbiddenClass();
+  const err = new Error('FORBIDDEN');
+  err.status = 403;
+  err.code = 'FORBIDDEN';
+  err.extensions = { code: 'FORBIDDEN' };
+  return err;
+}
 
 // Access level required per collection for items.create:
 //   'manager'  → current user must have manager OR owner of target band
@@ -86,7 +110,7 @@ async function guardCreate(collection, payload, accountability, ctx) {
   if (accountability?.admin === true) return payload;
 
   if (!accountability?.user) {
-    throw new ForbiddenError();
+    throw await forbidden();
   }
 
   const rule = RULES[collection];
@@ -112,7 +136,7 @@ async function guardCreate(collection, payload, accountability, ctx) {
 
   const bandId = await resolveBandId(payload, rule, ctx.database);
   if (bandId == null) {
-    throw new ForbiddenError();
+    throw await forbidden();
   }
 
   const allowed = await userHasAccess(accountability.user, bandId, rule.level, ctx.database);
@@ -120,7 +144,7 @@ async function guardCreate(collection, payload, accountability, ctx) {
     ctx.logger.debug(
       `[permissions-guard] blocked ${collection}.create user=${accountability.user} band=${bandId} required=${rule.level}`
     );
-    throw new ForbiddenError();
+    throw await forbidden();
   }
 
   return payload;
@@ -135,8 +159,8 @@ export default ({ filter }, context) => {
       try {
         return await guardCreate(collection, payload, accountability, ctx);
       } catch (err) {
-        // Expected: ForbiddenError is the 403 we raise deliberately. Silent.
-        if (err instanceof ForbiddenError) throw err;
+        // Expected: the FORBIDDEN error we raise deliberately (DirectusError or fallback). Silent.
+        if (err?.code === 'FORBIDDEN') throw err;
 
         // Unexpected: DB error, bug, unhandled edge case. Mail admins, then re-throw
         // so Directus still surfaces the error to the caller (do not swallow —
