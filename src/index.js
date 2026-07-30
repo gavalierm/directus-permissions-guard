@@ -64,12 +64,28 @@ function normalizeId(v) {
   return v;
 }
 
+const INT4_MAX = 2147483647;
+
+// The id / band columns are all Postgres int4. A payload can carry a numeric FK that overflows
+// int4 — a long digit string ("9999999999999999999") slips past the `/^\d+$/` nested-placeholder
+// check but then blows up the raw Knex lookup with "value out of range for type integer",
+// surfacing as an unexpected 500 (and an admin mail). An out-of-range or non-integer reference
+// can never match a real row, so coerce it to a valid int4 id or null; null then flows to a
+// clean 403 deny instead of a 500.
+function toInt4Id(v) {
+  const n = normalizeId(v);
+  if (n == null) return null;
+  const num = Number(n);
+  if (!Number.isInteger(num) || num < 1 || num > INT4_MAX) return null;
+  return num;
+}
+
 async function resolveBandId(payload, rule, database) {
   if (rule.bandField) {
-    return normalizeId(payload?.[rule.bandField]);
+    return toInt4Id(payload?.[rule.bandField]);
   }
   const { collection, fk } = rule.parentLookup;
-  const parentId = normalizeId(payload?.[fk]);
+  const parentId = toInt4Id(payload?.[fk]);
   if (parentId == null) return null;
   const parent = await database(collection).where({ id: parentId }).select('band').first();
   return parent?.band ?? null;
