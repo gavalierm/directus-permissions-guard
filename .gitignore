@@ -1,2 +1,4 @@
 node_modules
 .DS_Store
+agentic-brain/scratch/*
+!agentic-brain/scratch/.gitkeep
